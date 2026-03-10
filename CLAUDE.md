@@ -13,7 +13,7 @@ src/                         # Go module root
     gui/icon.png             # Transparent dock icon
   pkg/proc/
     proc.go                  # Process collection via gopsutil v4
-    naming.go                # Smart naming: "python: my_server.py" from cmdline
+    naming.go                # Smart naming: "python: project-dir" from cwd
     naming_test.go
     hide.go                  # Persistent hide list (JSON-backed)
     hide_test.go
@@ -46,5 +46,6 @@ output/                      # Gitignored — bin/, testing/
 - **Gio macOS daemon launch**: `app.Main()` MUST be on the main goroutine. Event loop goes in a goroutine. Without this, windows never appear when launched by auto/launchd.
 - **Gio v0.9.0 API limitations**: No `app.Position`, no `pointer.InputOp` for per-row right-click. Use `font.Bold` not `text.Bold`.
 - **Window position persistence**: Uses NSWindow frame autosave via CGO (`setFrameAutosaveName:`), not Gio APIs.
-- **Column alignment**: Fixed dp widths for numeric columns (PID 70, CPU 80, Memory 100, Virtual 100), flexed name column.
-- **Smart naming**: `CmdlineSlice()` parses interpreter+script from argv. Maps interpreter binaries to language labels.
+- **Column alignment**: Fixed dp widths for numeric columns (PID 90, CPU 80, Memory 100, Virtual 100), flexed name column.
+- **Smart naming**: Always uses cwd project directory for interpreters (python, node, etc.) and cwd-labeled programs (claude). Script args are ignored — they're generic tools (uvicorn, flask, run) not project identifiers. Case-insensitive interpreter matching (macOS Homebrew uses capital-P "Python").
+- **NSWindow autosave**: `setFrameAutosaveName:` needs nil guard — `stringWithUTF8String:` can return nil and crash without it.
