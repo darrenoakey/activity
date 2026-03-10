@@ -10,11 +10,14 @@ package ui
 // persists and restores the window position automatically across launches.
 void enableFrameAutosave(const char *name) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        if (!name) return;
         NSArray *windows = [NSApp windows];
         if (windows.count > 0) {
             NSWindow *win = windows[0];
             NSString *saveName = [NSString stringWithUTF8String:name];
-            [win setFrameAutosaveName:saveName];
+            if (saveName) {
+                [win setFrameAutosaveName:saveName];
+            }
         }
     });
 }

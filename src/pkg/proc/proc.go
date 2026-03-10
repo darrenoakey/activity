@@ -55,6 +55,7 @@ func gather(p *process.Process) (Info, error) {
 	}
 
 	cmdline, _ := p.CmdlineSlice()
+	cwd, _ := p.Cwd()
 
 	cpu, _ := p.CPUPercent()
 
@@ -67,7 +68,7 @@ func gather(p *process.Process) (Info, error) {
 
 	return Info{
 		PID:     p.Pid,
-		Name:    SmartName(name, cmdline),
+		Name:    SmartName(name, cmdline, cwd),
 		RawName: name,
 		CPU:     cpu,
 		RSS:     rss,

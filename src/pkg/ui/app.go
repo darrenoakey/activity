@@ -40,7 +40,7 @@ const (
 )
 
 // Column layout: name, pid, cpu, phys, virt
-var colWidths = [5]unit.Dp{0, 70, 80, 100, 100} // name is flexed
+var colWidths = [5]unit.Dp{0, 90, 80, 100, 100} // name is flexed
 
 // Design tokens
 var (

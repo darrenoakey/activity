@@ -22,41 +22,44 @@ var interpreters = map[string]string{
 	"sh":      "sh",
 }
 
-// SmartName derives a human-readable process name from the command line.
-// For interpreted languages (Python, Node, etc.), it returns "lang: script_name".
-// For regular binaries, it returns the binary base name.
-// Falls back to the provided process name if cmdline is empty.
-func SmartName(processName string, cmdline []string) string {
+// cwdPrograms maps binary names that should be labeled by their working directory.
+// These programs have no useful distinguishing info in their cmdline args.
+var cwdPrograms = map[string]bool{
+	"claude": true,
+}
+
+// SmartName derives a human-readable process name from the command line and cwd.
+//
+// Naming strategy (in priority order):
+//  1. If cmdline is empty, use the OS process name.
+//  2. If the binary is a cwd-labeled program (e.g. claude), use "name: dir".
+//  3. If the binary is an interpreter (python, node, etc.), use "lang: dir" from cwd.
+//     Script args are almost always generic tools (uvicorn, flask, run, pyright-langserver)
+//     or -c garbage — the cwd project directory is what actually identifies the process.
+//  4. Otherwise, use the binary base name.
+func SmartName(processName string, cmdline []string, cwd string) string {
 	if len(cmdline) == 0 {
 		return processName
 	}
 
 	binary := filepath.Base(cmdline[0])
+	binaryLower := strings.ToLower(binary)
 
-	lang, isInterpreter := interpreters[binary]
+	if cwdPrograms[binaryLower] {
+		if cwd != "" && cwd != "/" {
+			return binaryLower + ": " + filepath.Base(cwd)
+		}
+		return binary
+	}
+
+	lang, isInterpreter := interpreters[binaryLower]
 	if !isInterpreter {
 		return binary
 	}
 
-	script := findScript(cmdline[1:])
-	if script == "" {
-		return binary
+	if cwd != "" && cwd != "/" {
+		return lang + ": " + filepath.Base(cwd)
 	}
 
-	return lang + ": " + script
-}
-
-// findScript locates the script argument in a command line, skipping flags.
-func findScript(args []string) string {
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			continue
-		}
-		// Skip common interpreter subcommands
-		if arg == "run" || arg == "exec" || arg == "serve" {
-			continue
-		}
-		return filepath.Base(arg)
-	}
-	return ""
+	return binary
 }
