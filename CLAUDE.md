@@ -12,14 +12,18 @@ src/                         # Go module root
     icon_darwin.go           # Dock icon via NSApplication CGO
     gui/icon.png             # Transparent dock icon
   pkg/proc/
-    proc.go                  # Process collection via gopsutil v4
+    proc.go                  # Process collection + ExtendedInfo via gopsutil v4
     naming.go                # Smart naming: "python: project-dir" from cwd
     naming_test.go
+    tree.go                  # Process tree building (ancestor chain + full subtree)
     hide.go                  # Persistent hide list (JSON-backed)
     hide_test.go
   pkg/ui/
-    app.go                   # Main UI layout, dark theme, color-coded CPU
+    app.go                   # Main UI layout, dark theme, color-coded CPU, right-click menu
     app_test.go
+    menu.go                  # Floating context menu (Hide/Tree/Info)
+    info.go                  # Process info window (details + environment tabs)
+    tree.go                  # Process tree window (ancestor lineage + subtree)
     window.go                # Window size persistence (debounced JSON save)
     window_darwin.go         # NSWindow frame autosave via CGO (position persistence)
 local/                       # Gitignored — hidden.json, window.json
@@ -44,7 +48,11 @@ output/                      # Gitignored — bin/, testing/
 ## Gotchas
 
 - **Gio macOS daemon launch**: `app.Main()` MUST be on the main goroutine. Event loop goes in a goroutine. Without this, windows never appear when launched by auto/launchd.
-- **Gio v0.9.0 API limitations**: No `app.Position`, no `pointer.InputOp` for per-row right-click. Use `font.Bold` not `text.Bold`.
+- **Gio v0.9.0 API limitations**: No `app.Position`. Use `font.Bold` not `text.Bold`.
+- **Per-row right-click**: Works via `pointer.Filter{Target: tag, Kinds: pointer.Press}` + `event.Op(ops, tag)` within a `clip.Rect`. Check `e.Buttons.Contain(pointer.ButtonSecondary)`. Use stable pointer tags (`[]*bool` not `[]bool`) to survive slice reallocation.
+- **Gio pointer event stale events**: When hiding a handler (e.g. context menu dismissed), always drain queued events for its tags on the next frame, or they'll fire when the handler is next shown.
+- **Multi-window**: Create new `app.Window` in goroutines with their own event loops. `app.Main()` stays on the main goroutine. Each window needs its own `material.Theme` instance.
+- **Process tree pruning**: `BuildTree()` prunes ancestors to only show the single child on the path to the target. The target's full subtree is preserved.
 - **Window position persistence**: Uses NSWindow frame autosave via CGO (`setFrameAutosaveName:`), not Gio APIs.
 - **Column alignment**: Fixed dp widths for numeric columns (PID 90, CPU 80, Memory 100, Virtual 100), flexed name column.
 - **Smart naming**: Always uses cwd project directory for interpreters (python, node, etc.) and cwd-labeled programs (claude). Script args are ignored — they're generic tools (uvicorn, flask, run) not project identifiers. Case-insensitive interpreter matching (macOS Homebrew uses capital-P "Python").
