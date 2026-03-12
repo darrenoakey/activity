@@ -13,6 +13,8 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/font"
+	"gioui.org/io/event"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -81,6 +83,13 @@ type App struct {
 	headerCPU  widget.Clickable
 	headerRSS  widget.Clickable
 	headerVMS  widget.Clickable
+
+	// right-click context menu
+	rowTags []*bool // pointer event tags (stable pointers, one per visible row)
+	menu    ContextMenu
+
+	// table Y offset for absolute menu positioning
+	tableOffsetY int
 }
 
 // NewApp creates a new activity monitor application.
@@ -132,23 +141,48 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 
 	visible := a.filterAndSort(procs, showHidden, sortCol)
 
-	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+	// Track cumulative Y for absolute menu positioning
+	a.tableOffsetY = 0
+	dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return a.layoutToolbar(gtx, len(procs), len(visible))
+			d := a.layoutToolbar(gtx, len(procs), len(visible))
+			a.tableOffsetY += d.Size.Y
+			return d
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return a.layoutSeparator(gtx)
+			d := a.layoutSeparator(gtx)
+			a.tableOffsetY += d.Size.Y
+			return d
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return a.layoutHeader(gtx, sortCol)
+			d := a.layoutHeader(gtx, sortCol)
+			a.tableOffsetY += d.Size.Y
+			return d
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return a.layoutSeparator(gtx)
+			d := a.layoutSeparator(gtx)
+			a.tableOffsetY += d.Size.Y
+			return d
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			return a.layoutTable(gtx, visible)
 		}),
 	)
+
+	// Context menu overlay (rendered last, on top of everything)
+	result := a.menu.Layout(gtx, a.theme)
+	if result.ok {
+		switch result.action {
+		case ActionHide:
+			a.hideList.Toggle(result.name)
+		case ActionInfo:
+			go RunInfoWindow(result.pid, func(int32) {})
+		case ActionTree:
+			go RunTreeWindow(result.pid, func(int32) {})
+		}
+	}
+
+	return dims
 }
 
 func (a *App) handleHeaderClicks(gtx layout.Context) {
@@ -332,8 +366,38 @@ func (a *App) layoutRow(gtx layout.Context, p proc.Info, index int) layout.Dimen
 		paint.FillShape(gtx.Ops, rowAltColor, clip.Rect{Max: image.Pt(totalW, rowH)}.Op())
 	}
 
-	// Right-click area not available in Gio v0.9.0 per-row;
-	// hide is toggled via the "Show all" toggle button instead.
+	// Right-click detection per row (pointers are stable across appends)
+	for len(a.rowTags) <= index {
+		tag := new(bool)
+		a.rowTags = append(a.rowTags, tag)
+	}
+
+	rowArea := clip.Rect{Max: image.Pt(totalW, rowH)}.Push(gtx.Ops)
+	event.Op(gtx.Ops, a.rowTags[index])
+	rowArea.Pop()
+
+	for {
+		ev, ok := gtx.Event(pointer.Filter{
+			Target: a.rowTags[index],
+			Kinds:  pointer.Press,
+		})
+		if !ok {
+			break
+		}
+		if e, ok := ev.(pointer.Event); ok {
+			if e.Buttons.Contain(pointer.ButtonSecondary) {
+				// e.Position is local to the row's clip area.
+				// Compute absolute window position:
+				// - tableOffsetY is the Y of the table top in window coords
+				// - The row's Y within the visible viewport:
+				//   (index - list.Position.First) * rowH - list.Position.Offset
+				rowY := (index-a.list.Position.First)*rowH - a.list.Position.Offset
+				absX := int(e.Position.X)
+				absY := a.tableOffsetY + rowY + int(e.Position.Y)
+				a.menu.Show(image.Pt(absX, absY), p.PID, p.Name)
+			}
+		}
+	}
 
 	nameW := totalW
 	for i := 1; i < len(colWidths); i++ {
