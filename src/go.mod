@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	gioui.org v0.9.0
+	github.com/darrenoakey/daz-golang-gio v0.0.2
 	github.com/shirou/gopsutil/v4 v4.26.2
 )
 

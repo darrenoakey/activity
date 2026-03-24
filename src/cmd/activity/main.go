@@ -13,6 +13,7 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/op"
+	"github.com/darrenoakey/daz-golang-gio/persist"
 )
 
 func main() {
@@ -29,15 +30,8 @@ func main() {
 	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(resolved)))
 	localDir := filepath.Join(projectRoot, "local")
 	hidePath := filepath.Join(localDir, "hidden.json")
-	windowPath := filepath.Join(localDir, "window.json")
 
 	hideList, err := proc.NewHideList(hidePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-
-	windowState, err := ui.NewWindowPersist(windowPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -47,17 +41,9 @@ func main() {
 
 	// Run the event loop in a goroutine — app.Main() must own the main goroutine on macOS
 	go func() {
-		win := new(app.Window)
-		win.Option(app.Title("Activity Monitor"))
-		windowState.Apply(win)
+		w := persist.NewWindow("activity", app.Title("Activity Monitor"))
 
-		// Enable macOS native frame autosave for position persistence
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			ui.EnableFrameAutosave("ActivityMonitor")
-		}()
-
-		monitor := ui.NewApp(win, hideList)
+		monitor := ui.NewApp(w.Window, hideList)
 
 		go monitor.Refresh()
 
@@ -71,15 +57,13 @@ func main() {
 
 		var ops op.Ops
 		for {
-			switch e := win.Event().(type) {
+			switch e := w.Event().(type) {
 			case app.DestroyEvent:
 				if e.Err != nil {
 					fmt.Fprintf(os.Stderr, "error: %v\n", e.Err)
 				}
+				w.Close()
 				os.Exit(0)
-			case app.ConfigEvent:
-				c := e.Config
-				windowState.UpdateSize(c.Size.X, c.Size.Y)
 			case app.FrameEvent:
 				gtx := app.NewContext(&ops, e)
 				monitor.Layout(gtx)

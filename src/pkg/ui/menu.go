@@ -23,42 +23,36 @@ const (
 	ActionHide MenuAction = iota
 	ActionTree
 	ActionInfo
+	ActionKill
 )
 
-// ContextMenu is a floating right-click context menu.
-type ContextMenu struct {
-	visible    bool
-	pos        image.Point // absolute window position
-	targetPID  int32
-	targetName string
-	items      []menuItem
-	itemTags   [3]bool // used as pointer event tags (address = tag)
-	bgTag      bool    // background dismiss tag
+// MenuItem defines a single context menu entry.
+type MenuItem struct {
+	Label  string
+	Action MenuAction
 }
 
-type menuItem struct {
-	label  string
-	action MenuAction
-}
-
-var defaultMenuItems = []menuItem{
+// DefaultMenuItems is the standard set of context menu actions.
+var DefaultMenuItems = []MenuItem{
 	{"Hide", ActionHide},
 	{"Tree", ActionTree},
 	{"Info", ActionInfo},
+	{"Kill", ActionKill},
 }
 
-// Show opens the context menu at the given window position for the given process.
-func (m *ContextMenu) Show(pos image.Point, pid int32, name string) {
-	m.visible = true
-	m.pos = pos
-	m.targetPID = pid
-	m.targetName = name
-	m.items = defaultMenuItems
-}
+// ContextMenu is a reusable floating context menu component with hover highlighting.
+type ContextMenu struct {
+	visible    bool
+	showFrame  bool        // skip bg dismiss on the frame Show() was called
+	pos        image.Point // absolute window position
+	targetPID  int32
+	targetName string
+	items      []MenuItem
 
-// Dismiss closes the context menu.
-func (m *ContextMenu) Dismiss() {
-	m.visible = false
+	itemTags []*bool // stable pointer event tags, one per item
+	bgTag    bool    // background dismiss tag
+
+	hoverIdx int // currently hovered item index, -1 = none
 }
 
 // menuResult is returned from Layout when an action is triggered.
@@ -77,22 +71,75 @@ const (
 )
 
 var (
-	menuBG     = color.NRGBA{R: 0x28, G: 0x28, B: 0x28, A: 0xf0}
-	menuBorder = color.NRGBA{R: 0x3a, G: 0x3a, B: 0x3a, A: 0xff}
+	menuBG      = color.NRGBA{R: 0x28, G: 0x28, B: 0x28, A: 0xf0}
+	menuBorder  = color.NRGBA{R: 0x3a, G: 0x3a, B: 0x3a, A: 0xff}
+	menuHoverBG = color.NRGBA{R: 0x24, G: 0x3e, B: 0x6c, A: 0xff}
+	menuKillFG  = color.NRGBA{R: 0xff, G: 0x5c, B: 0x5c, A: 0xff}
 )
 
+// Show opens the context menu at the given window position for the given process.
+func (m *ContextMenu) Show(pos image.Point, pid int32, name string) {
+	m.visible = true
+	m.showFrame = true
+	m.pos = pos
+	m.targetPID = pid
+	m.targetName = name
+	m.items = DefaultMenuItems
+	m.hoverIdx = -1
+	m.ensureTags()
+}
+
+// Dismiss closes the context menu.
+func (m *ContextMenu) Dismiss() {
+	m.visible = false
+	m.hoverIdx = -1
+}
+
+// Visible returns whether the context menu is currently shown.
+func (m *ContextMenu) Visible() bool {
+	return m.visible
+}
+
+// ensureTags allocates stable pointer tags for each item.
+func (m *ContextMenu) ensureTags() {
+	for len(m.itemTags) < len(m.items) {
+		tag := new(bool)
+		m.itemTags = append(m.itemTags, tag)
+	}
+}
+
+// clampPosition adjusts a menu position to stay within window bounds.
+func clampPosition(pos image.Point, menuW, menuH, winW, winH int) image.Point {
+	if maxX := winW - menuW; pos.X > maxX {
+		pos.X = maxX
+	}
+	if maxY := winH - menuH; pos.Y > maxY {
+		pos.Y = maxY
+	}
+	if pos.X < 0 {
+		pos.X = 0
+	}
+	if pos.Y < 0 {
+		pos.Y = 0
+	}
+	return pos
+}
+
 // drainEvents discards any queued pointer events for all menu tags.
-// Must be called when the menu is not visible to prevent stale events
-// from firing when the menu is next shown.
+// Must be called when the menu is not visible or was just shown
+// to prevent stale events from firing.
 func (m *ContextMenu) drainEvents(gtx layout.Context) {
 	for {
 		if _, ok := gtx.Event(pointer.Filter{Target: &m.bgTag, Kinds: pointer.Press}); !ok {
 			break
 		}
 	}
-	for i := range m.itemTags {
+	for _, tag := range m.itemTags {
 		for {
-			if _, ok := gtx.Event(pointer.Filter{Target: &m.itemTags[i], Kinds: pointer.Press}); !ok {
+			if _, ok := gtx.Event(pointer.Filter{
+				Target: tag,
+				Kinds:  pointer.Press | pointer.Enter | pointer.Leave,
+			}); !ok {
 				break
 			}
 		}
@@ -106,12 +153,30 @@ func (m *ContextMenu) Layout(gtx layout.Context, th *material.Theme) menuResult 
 		return menuResult{}
 	}
 
-	// Background dismiss area: full window, to detect clicks outside menu
+	// On the frame Show() was called, drain stale bg events to prevent
+	// immediate dismiss from events queued before Show().
+	if m.showFrame {
+		m.showFrame = false
+		m.drainEvents(gtx)
+	}
+
+	totalH := menuItemH*len(m.items) + menuPadTop + menuPadBot
+
+	// Compute display position: center first item at cursor, shift left slightly
+	displayPos := clampPosition(
+		image.Pt(m.pos.X-8, m.pos.Y-menuItemH/2-menuPadTop),
+		menuW, totalH, gtx.Constraints.Max.X, gtx.Constraints.Max.Y,
+	)
+
+	// Background dismiss area: full window, with pass-through so row
+	// handlers underneath still receive pointer events.
+	passStack := pointer.PassOp{}.Push(gtx.Ops)
 	bgArea := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
 	event.Op(gtx.Ops, &m.bgTag)
 	bgArea.Pop()
+	passStack.Pop()
 
-	// Check for dismiss click (press on background outside menu bounds)
+	// Check for dismiss click (press outside menu bounds)
 	for {
 		ev, ok := gtx.Event(pointer.Filter{
 			Target: &m.bgTag,
@@ -121,8 +186,8 @@ func (m *ContextMenu) Layout(gtx layout.Context, th *material.Theme) menuResult 
 			break
 		}
 		if e, ok := ev.(pointer.Event); ok {
-			menuRect := image.Rect(m.pos.X, m.pos.Y,
-				m.pos.X+menuW, m.pos.Y+menuItemH*len(m.items)+menuPadTop+menuPadBot)
+			menuRect := image.Rect(displayPos.X, displayPos.Y,
+				displayPos.X+menuW, displayPos.Y+totalH)
 			pt := image.Pt(int(e.Position.X), int(e.Position.Y))
 			if !pt.In(menuRect) {
 				m.Dismiss()
@@ -131,70 +196,83 @@ func (m *ContextMenu) Layout(gtx layout.Context, th *material.Theme) menuResult 
 		}
 	}
 
-	// Clamp menu position to stay within window
-	pos := m.pos
-	if maxX := gtx.Constraints.Max.X - menuW; pos.X > maxX {
-		pos.X = maxX
-	}
-	totalH := menuItemH*len(m.items) + menuPadTop + menuPadBot
-	if maxY := gtx.Constraints.Max.Y - totalH; pos.Y > maxY {
-		pos.Y = maxY
-	}
-	if pos.X < 0 {
-		pos.X = 0
-	}
-	if pos.Y < 0 {
-		pos.Y = 0
-	}
+	pos := displayPos
 
 	// Draw menu at position
 	menuOffset := op.Offset(pos).Push(gtx.Ops)
 
-	// Menu background with border
+	// Border
 	borderRect := clip.Rect{Max: image.Pt(menuW, totalH)}.Push(gtx.Ops)
 	paint.FillShape(gtx.Ops, menuBorder, clip.Rect{Max: image.Pt(menuW, totalH)}.Op())
 	borderRect.Pop()
 
+	// Inner background
 	innerRect := clip.Rect{Min: image.Pt(1, 1), Max: image.Pt(menuW-1, totalH-1)}.Push(gtx.Ops)
 	paint.FillShape(gtx.Ops, menuBG, clip.Rect{Max: image.Pt(menuW-2, totalH-2)}.Op())
 	innerRect.Pop()
 
-	// Draw menu items
+	// Draw items
 	var result menuResult
 	y := menuPadTop
+	m.ensureTags()
 	for i, item := range m.items {
+		tag := m.itemTags[i]
 		itemOff := op.Offset(image.Pt(1, y)).Push(gtx.Ops)
 		itemW := menuW - 2
 
-		// Item click area
+		// Event area for click + hover
 		itemArea := clip.Rect{Max: image.Pt(itemW, menuItemH)}.Push(gtx.Ops)
-		event.Op(gtx.Ops, &m.itemTags[i])
+		event.Op(gtx.Ops, tag)
 		itemArea.Pop()
 
-		// Check for click on this item
+		// Process events (click + hover)
 		for {
 			ev, ok := gtx.Event(pointer.Filter{
-				Target: &m.itemTags[i],
-				Kinds:  pointer.Press,
+				Target: tag,
+				Kinds:  pointer.Press | pointer.Enter | pointer.Leave,
 			})
 			if !ok {
 				break
 			}
-			if _, ok := ev.(pointer.Event); ok {
-				result = menuResult{
-					action: item.action,
-					pid:    m.targetPID,
-					name:   m.targetName,
-					ok:     true,
+			if e, ok := ev.(pointer.Event); ok {
+				switch e.Kind {
+				case pointer.Enter:
+					m.hoverIdx = i
+				case pointer.Leave:
+					if m.hoverIdx == i {
+						m.hoverIdx = -1
+					}
+				case pointer.Press:
+					result = menuResult{
+						action: item.Action,
+						pid:    m.targetPID,
+						name:   m.targetName,
+						ok:     true,
+					}
+					m.Dismiss()
 				}
-				m.Dismiss()
 			}
+		}
+
+		// Hover background
+		if m.hoverIdx == i {
+			paint.FillShape(gtx.Ops, menuHoverBG,
+				clip.Rect{Max: image.Pt(itemW, menuItemH)}.Op())
 		}
 
 		// Label
 		labelOff := op.Offset(image.Pt(12, 7)).Push(gtx.Ops)
-		l := material.Body2(th, item.label)
-		l.Color = textPrimary
+
+		labelColor := textPrimary
+		if item.Action == ActionKill {
+			labelColor = menuKillFG
+		}
+		if m.hoverIdx == i {
+			labelColor = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+		}
+
+		l := material.Body2(th, item.Label)
+		l.Color = labelColor
 		l.TextSize = unit.Sp(13)
 		l.Font.Weight = font.Normal
 		l.Alignment = text.Start

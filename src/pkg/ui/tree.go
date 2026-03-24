@@ -158,11 +158,12 @@ func layoutTreeRow(gtx layout.Context, th *material.Theme, row flatRow, index in
 		if e, ok := ev.(pointer.Event); ok {
 			if e.Buttons.Contain(pointer.ButtonSecondary) {
 				// Show menu with only Info option for tree rows
-				menu.items = []menuItem{{"Info", ActionInfo}}
-				menu.visible = true
-				menu.pos = image.Pt(int(e.Position.X), int(e.Position.Y)+index*rowH)
-				menu.targetPID = row.node.PID
-				menu.targetName = row.node.Name
+				menu.Show(
+					image.Pt(int(e.Position.X), int(e.Position.Y)+index*rowH),
+					row.node.PID,
+					row.node.Name,
+				)
+				menu.items = []MenuItem{{"Info", ActionInfo}}
 			}
 		}
 	}

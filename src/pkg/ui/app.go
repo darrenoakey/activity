@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"activity/pkg/proc"
@@ -179,6 +180,9 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 			go RunInfoWindow(result.pid, func(int32) {})
 		case ActionTree:
 			go RunTreeWindow(result.pid, func(int32) {})
+		case ActionKill:
+			syscall.Kill(int(result.pid), syscall.SIGKILL)
+			go a.Refresh()
 		}
 	}
 
