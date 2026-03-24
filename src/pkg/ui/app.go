@@ -87,7 +87,7 @@ type App struct {
 
 	// right-click context menu
 	rowTags []*bool // pointer event tags (stable pointers, one per visible row)
-	menu    ContextMenu
+	menu    processMenu
 
 	// table Y offset for absolute menu positioning
 	tableOffsetY int
@@ -174,13 +174,13 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	result := a.menu.Layout(gtx, a.theme)
 	if result.ok {
 		switch result.action {
-		case ActionHide:
+		case actionHide:
 			a.hideList.Toggle(result.name)
-		case ActionInfo:
+		case actionInfo:
 			go RunInfoWindow(result.pid, func(int32) {})
-		case ActionTree:
+		case actionTree:
 			go RunTreeWindow(result.pid, func(int32) {})
-		case ActionKill:
+		case actionKill:
 			syscall.Kill(int(result.pid), syscall.SIGKILL)
 			go a.Refresh()
 		}

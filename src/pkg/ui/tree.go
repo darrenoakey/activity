@@ -8,6 +8,8 @@ import (
 
 	"activity/pkg/proc"
 
+	giomenu "github.com/darrenoakey/daz-golang-gio/menu"
+
 	"gioui.org/app"
 	"gioui.org/font"
 	"gioui.org/io/event"
@@ -49,7 +51,7 @@ func RunTreeWindow(pid int32, onClose func(int32)) {
 		list    widget.List
 		rows    []flatRow
 		rowTags []bool // pointer event tags per row
-		menu    ContextMenu
+		menu    processMenu
 		errMsg  string
 	)
 	list.Axis = layout.Vertical
@@ -113,7 +115,7 @@ var (
 )
 
 func layoutTreeContent(gtx layout.Context, th *material.Theme, list *widget.List,
-	rows []flatRow, rowTags []bool, menu *ContextMenu) layout.Dimensions {
+	rows []flatRow, rowTags []bool, menu *processMenu) layout.Dimensions {
 
 	dims := material.List(th, list).Layout(gtx, len(rows), func(gtx layout.Context, index int) layout.Dimensions {
 		row := rows[index]
@@ -123,7 +125,7 @@ func layoutTreeContent(gtx layout.Context, th *material.Theme, list *widget.List
 	// Render context menu overlay
 	result := menu.Layout(gtx, th)
 	if result.ok {
-		if result.action == ActionInfo {
+		if result.action == actionInfo {
 			go RunInfoWindow(result.pid, func(p int32) {})
 		}
 	}
@@ -131,7 +133,7 @@ func layoutTreeContent(gtx layout.Context, th *material.Theme, list *widget.List
 	return dims
 }
 
-func layoutTreeRow(gtx layout.Context, th *material.Theme, row flatRow, index int, rowTags []bool, menu *ContextMenu) layout.Dimensions {
+func layoutTreeRow(gtx layout.Context, th *material.Theme, row flatRow, index int, rowTags []bool, menu *processMenu) layout.Dimensions {
 	rowH := gtx.Dp(unit.Dp(30))
 	totalW := gtx.Constraints.Max.X
 
@@ -158,12 +160,13 @@ func layoutTreeRow(gtx layout.Context, th *material.Theme, row flatRow, index in
 		if e, ok := ev.(pointer.Event); ok {
 			if e.Buttons.Contain(pointer.ButtonSecondary) {
 				// Show menu with only Info option for tree rows
-				menu.Show(
+				infoOnly := []giomenu.Item{{Label: "Info"}}
+				menu.ShowItems(
 					image.Pt(int(e.Position.X), int(e.Position.Y)+index*rowH),
 					row.node.PID,
 					row.node.Name,
+					infoOnly,
 				)
-				menu.items = []MenuItem{{"Info", ActionInfo}}
 			}
 		}
 	}
