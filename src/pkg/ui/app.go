@@ -390,15 +390,7 @@ func (a *App) layoutRow(gtx layout.Context, p proc.Info, index int) layout.Dimen
 		}
 		if e, ok := ev.(pointer.Event); ok {
 			if e.Buttons.Contain(pointer.ButtonSecondary) {
-				// e.Position is local to the row's clip area.
-				// Compute absolute window position:
-				// - tableOffsetY is the Y of the table top in window coords
-				// - The row's Y within the visible viewport:
-				//   (index - list.Position.First) * rowH - list.Position.Offset
-				rowY := (index-a.list.Position.First)*rowH - a.list.Position.Offset
-				absX := int(e.Position.X)
-				absY := a.tableOffsetY + rowY + int(e.Position.Y)
-				a.menu.Show(image.Pt(absX, absY), p.PID, p.Name)
+				a.menu.Show(p.PID, p.Name)
 			}
 		}
 	}

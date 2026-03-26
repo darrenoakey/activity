@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"image"
 	"image/color"
 
 	"github.com/darrenoakey/daz-golang-gio/menu"
@@ -44,17 +43,18 @@ type menuResult struct {
 }
 
 // Show opens the context menu for the given process.
-func (m *processMenu) Show(pos image.Point, pid int32, name string) {
+// Position is tracked automatically by the library's cursor tracking.
+func (m *processMenu) Show(pid int32, name string) {
 	m.targetPID = pid
 	m.targetName = name
-	m.ContextMenu.Show(pos, defaultMenuItems)
+	m.ContextMenu.Show(defaultMenuItems)
 }
 
 // ShowItems opens the context menu with custom items for the given process.
-func (m *processMenu) ShowItems(pos image.Point, pid int32, name string, items []menu.Item) {
+func (m *processMenu) ShowItems(pid int32, name string, items []menu.Item) {
 	m.targetPID = pid
 	m.targetName = name
-	m.ContextMenu.Show(pos, items)
+	m.ContextMenu.Show(items)
 }
 
 // Layout renders the menu and returns any triggered action with process context.

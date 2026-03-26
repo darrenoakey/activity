@@ -1,17 +1,16 @@
 package ui
 
 import (
-	"image"
 	"testing"
 )
 
 // Tests for processMenu — the app-specific wrapper over menu.ContextMenu.
-// Core menu behavior (clamping, hover, tags, dimensions) is tested in the
-// daz-golang-gio/menu package.
+// Core menu behavior (clamping, hover, tags, cursor tracking, dimensions)
+// is tested in the daz-golang-gio/menu package.
 
 func TestProcessMenu_ShowSetsTarget(t *testing.T) {
 	var m processMenu
-	m.Show(image.Pt(100, 200), 1234, "test-proc")
+	m.Show(1234, "test-proc")
 	if m.targetPID != 1234 {
 		t.Errorf("targetPID = %d, want 1234", m.targetPID)
 	}
@@ -25,8 +24,8 @@ func TestProcessMenu_ShowSetsTarget(t *testing.T) {
 
 func TestProcessMenu_ShowUpdatesTarget(t *testing.T) {
 	var m processMenu
-	m.Show(image.Pt(100, 100), 1000, "first")
-	m.Show(image.Pt(200, 200), 2000, "second")
+	m.Show(1000, "first")
+	m.Show(2000, "second")
 	if m.targetPID != 2000 {
 		t.Errorf("targetPID = %d, want 2000", m.targetPID)
 	}
@@ -37,12 +36,11 @@ func TestProcessMenu_ShowUpdatesTarget(t *testing.T) {
 
 func TestProcessMenu_DismissPreservesTarget(t *testing.T) {
 	var m processMenu
-	m.Show(image.Pt(100, 200), 1234, "proc")
+	m.Show(1234, "proc")
 	m.Dismiss()
 	if m.Visible() {
 		t.Error("menu should not be visible after Dismiss")
 	}
-	// Target info preserved for potential reuse
 	if m.targetPID != 1234 {
 		t.Errorf("targetPID = %d, want 1234 (preserved after dismiss)", m.targetPID)
 	}
@@ -51,14 +49,14 @@ func TestProcessMenu_DismissPreservesTarget(t *testing.T) {
 func TestProcessMenu_ShowDismissShowCycle(t *testing.T) {
 	var m processMenu
 
-	m.Show(image.Pt(100, 100), 1000, "proc1")
+	m.Show(1000, "proc1")
 	if !m.Visible() {
 		t.Fatal("should be visible after first Show")
 	}
 
 	m.Dismiss()
 
-	m.Show(image.Pt(200, 200), 2000, "proc2")
+	m.Show(2000, "proc2")
 	if !m.Visible() {
 		t.Error("should be visible after second Show")
 	}
@@ -90,7 +88,6 @@ func TestDefaultMenuItems_KillHasRedColor(t *testing.T) {
 }
 
 func TestActionIndices(t *testing.T) {
-	// Verify action constants match defaultMenuItems positions
 	if defaultMenuItems[actionHide].Label != "Hide" {
 		t.Errorf("actionHide (%d) doesn't point to Hide", actionHide)
 	}

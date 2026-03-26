@@ -161,12 +161,7 @@ func layoutTreeRow(gtx layout.Context, th *material.Theme, row flatRow, index in
 			if e.Buttons.Contain(pointer.ButtonSecondary) {
 				// Show menu with only Info option for tree rows
 				infoOnly := []giomenu.Item{{Label: "Info"}}
-				menu.ShowItems(
-					image.Pt(int(e.Position.X), int(e.Position.Y)+index*rowH),
-					row.node.PID,
-					row.node.Name,
-					infoOnly,
-				)
+				menu.ShowItems(row.node.PID, row.node.Name, infoOnly)
 			}
 		}
 	}
