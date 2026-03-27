@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"activity/pkg/proc"
@@ -42,8 +43,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	macos.SetDockIcon(dockIconBytes)
-
 	// Run the event loop in a goroutine — app.Main() must own the main goroutine on macOS
 	go func() {
 		w := persist.NewWindow("activity", app.Title("Activity Monitor"))
@@ -61,6 +60,7 @@ func main() {
 		}()
 
 		var ops op.Ops
+		var iconOnce sync.Once
 		for {
 			switch e := w.Event().(type) {
 			case app.DestroyEvent:
@@ -70,6 +70,7 @@ func main() {
 				w.Close()
 				os.Exit(0)
 			case app.FrameEvent:
+				iconOnce.Do(func() { macos.SetDockIcon(dockIconBytes) })
 				gtx := app.NewContext(&ops, e)
 				monitor.Layout(gtx)
 				e.Frame(gtx.Ops)
