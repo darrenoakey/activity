@@ -21,7 +21,7 @@ src/                         # Go module root
   pkg/ui/
     app.go                   # Main UI layout, dark theme, color-coded CPU, right-click menu
     app_test.go
-    menu.go                  # Floating context menu (Hide/Tree/Info)
+    menu.go                  # Process menu wrapper over daz-golang-gio/menu (Hide/Tree/Info/Kill)
     info.go                  # Process info window (details + environment tabs)
     tree.go                  # Process tree window (ancestor lineage + subtree)
     window.go                # Window size persistence (debounced JSON save)
@@ -41,6 +41,7 @@ output/                      # Gitignored — bin/, testing/
 ## Architecture
 
 - **Gio v0.9.0** immediate-mode UI framework
+- **daz-golang-gio** shared library for window persistence (`persist`) and context menus (`menu`)
 - **gopsutil v4** for process info (CPU%, RSS, VMS, cmdline)
 - **10s refresh interval** for gentle resource usage
 - Managed by `auto` daemon (always running, crash recovery, login startup)

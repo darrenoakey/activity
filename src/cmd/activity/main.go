@@ -2,6 +2,7 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,8 +14,12 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/op"
+	"github.com/darrenoakey/daz-golang-gio/macos"
 	"github.com/darrenoakey/daz-golang-gio/persist"
 )
+
+//go:embed gui/icon.png
+var dockIconBytes []byte
 
 func main() {
 	// Resolve project root: executable lives in output/bin/ under project root
@@ -37,7 +42,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	setDockIcon()
+	macos.SetDockIcon(dockIconBytes)
 
 	// Run the event loop in a goroutine — app.Main() must own the main goroutine on macOS
 	go func() {
