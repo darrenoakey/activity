@@ -6,6 +6,9 @@ SRC_DIR="$SCRIPT_DIR/src"
 OUTPUT_DIR="$SCRIPT_DIR/output"
 BIN_DIR="$OUTPUT_DIR/bin"
 TEST_DIR="$OUTPUT_DIR/testing"
+APP_BUNDLE="$OUTPUT_DIR/ActivityApp.app"
+APP_EXE="$APP_BUNDLE/Contents/MacOS/activity"
+BUNDLE_ID="com.darrenoakey.activity"
 
 mkdir -p "$BIN_DIR" "$TEST_DIR"
 
@@ -21,6 +24,20 @@ usage() {
     exit 1
 }
 
+# signing_identity finds a stable code-signing identity so the bundle's
+# CFBundleIdentifier-based Designated Requirement survives rebuilds.
+signing_identity() {
+    local id
+    id="$( (security find-identity -v -p codesigning 2>/dev/null \
+            | grep -E "Apple Development: Darren Oakey|Developer ID Application: " \
+            | head -1 | awk '{print $2}') || true )"
+    if [ -n "$id" ]; then
+        echo "$id"
+    else
+        echo "-"
+    fi
+}
+
 cmd_build() {
     echo "==> Building..."
     cd "$SRC_DIR"
@@ -29,7 +46,28 @@ cmd_build() {
         go build -o "$BIN_DIR/$name" "./$dir"
         echo "    Built $name -> output/bin/$name"
     done
+    cmd_bundle
     echo "==> Build complete."
+}
+
+# cmd_bundle assembles output/ActivityApp.app around the built binary and
+# code-signs it with a stable identity + distinct CFBundleIdentifier. A bare,
+# unbundled executable (no Info.plist) that still opens a native window gets
+# grouped by macOS's Force Quit "out of application memory" critical view
+# into one shared bucket with every OTHER unbundled windowed process on the
+# machine, displaying an identical bogus multi-GB figure for all of them —
+# see GOTCHAS.md. auto's own registered command must point at $APP_EXE, not
+# the bare output/bin/activity, for this to take effect.
+cmd_bundle() {
+    local id; id="$(signing_identity)"
+    echo "==> Bundling ActivityApp.app (sign id: $id)"
+    rm -rf "$APP_BUNDLE"
+    mkdir -p "$APP_BUNDLE/Contents/MacOS"
+    cp "$BIN_DIR/activity" "$APP_EXE"
+    cp "$SCRIPT_DIR/bundle/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+    codesign --force --options runtime --identifier "$BUNDLE_ID" \
+        --sign "$id" "$APP_BUNDLE" 2>&1 | sed 's/^/    /'
+    echo "    Bundled -> output/ActivityApp.app"
 }
 
 cmd_test() {
