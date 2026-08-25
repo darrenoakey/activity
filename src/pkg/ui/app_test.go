@@ -1,6 +1,10 @@
 package ui
 
-import "testing"
+import (
+	"testing"
+
+	"activity/pkg/proc"
+)
 
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
@@ -71,5 +75,30 @@ func TestCPUColor(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSameDisplay(t *testing.T) {
+	base := []proc.Info{{PID: 1, Name: "python: proj", CPU: 3.14159, RSS: 100 << 20, VMS: 1 << 30}}
+
+	same := func(cur []proc.Info) bool { return sameDisplay(base, cur) }
+
+	if !same(base) {
+		t.Error("identical snapshots must be display-equal")
+	}
+	if !same([]proc.Info{{PID: 1, Name: "python: proj", CPU: 3.142, RSS: 100<<20 + 4096, VMS: 1 << 30}}) {
+		t.Error("sub-display changes (CPU <0.1, RSS <1MB) must be display-equal")
+	}
+	if same([]proc.Info{{PID: 1, Name: "python: proj", CPU: 3.19, RSS: 100 << 20, VMS: 1 << 30}}) {
+		t.Error("CPU change crossing the displayed decimal must differ")
+	}
+	if same([]proc.Info{{PID: 1, Name: "python: proj", CPU: 3.14159, RSS: 101 << 20, VMS: 1 << 30}}) {
+		t.Error("RSS crossing a displayed MB must differ")
+	}
+	if same([]proc.Info{{PID: 1, Name: "other", CPU: 3.14159, RSS: 100 << 20, VMS: 1 << 30}}) {
+		t.Error("name change must differ")
+	}
+	if same([]proc.Info{}) {
+		t.Error("length change must differ")
 	}
 }

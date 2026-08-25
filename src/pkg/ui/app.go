@@ -2,10 +2,12 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
 	"sort"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -69,6 +71,7 @@ type App struct {
 	theme    *material.Theme
 	win      *app.Window
 	hideList *proc.HideList
+	monitor  *proc.Monitor
 
 	mu          sync.Mutex
 	processes   []proc.Info
@@ -100,6 +103,7 @@ func NewApp(win *app.Window, hideList *proc.HideList) *App {
 		theme:    th,
 		win:      win,
 		hideList: hideList,
+		monitor:  proc.NewMonitor(),
 		sortCol:  SortCPU,
 	}
 	a.list.Axis = layout.Vertical
@@ -107,18 +111,69 @@ func NewApp(win *app.Window, hideList *proc.HideList) *App {
 }
 
 // Refresh collects fresh process data. Call from a goroutine.
+// The Monitor caches per-process identity, so steady-state sampling is one
+// cheap syscall per process. The window is only repainted when something
+// visibly changed — an idle machine renders zero frames.
 func (a *App) Refresh() {
-	infos, err := proc.Collect()
+	infos, err := a.monitor.Sample()
 	if err != nil {
 		return
 	}
 
 	a.mu.Lock()
+	changed := !sameDisplay(a.processes, infos)
 	a.processes = infos
 	a.lastRefresh = time.Now()
 	a.mu.Unlock()
 
-	a.win.Invalidate()
+	if changed {
+		a.win.Invalidate()
+	}
+}
+
+// sameDisplay reports whether two snapshots would render identical text.
+func sameDisplay(old, cur []proc.Info) bool {
+	if len(old) != len(cur) {
+		return false
+	}
+	var ka, kb []byte
+	for i := range cur {
+		ka = rowDisplayKey(ka[:0], old[i])
+		kb = rowDisplayKey(kb[:0], cur[i])
+		if !bytes.Equal(ka, kb) {
+			return false
+		}
+	}
+	return true
+}
+
+// rowDisplayKey renders the row's visible columns (pid, name, CPU at one
+// decimal, memory at formatBytes granularity) into buf. Built on strconv —
+// the same backend fmt uses — so equal keys guarantee equal displayed text.
+func rowDisplayKey(buf []byte, p proc.Info) []byte {
+	buf = strconv.AppendInt(buf, int64(p.PID), 10)
+	buf = append(buf, 0)
+	buf = append(buf, p.Name...)
+	buf = append(buf, 0)
+	buf = strconv.AppendFloat(buf, p.CPU, 'f', 1, 64)
+	buf = append(buf, 0)
+	buf = appendMemKey(buf, p.RSS)
+	buf = append(buf, 0)
+	return appendMemKey(buf, p.VMS)
+}
+
+// appendMemKey mirrors formatBytes' thresholds and rounding.
+func appendMemKey(buf []byte, b uint64) []byte {
+	switch {
+	case b >= 1<<30:
+		return strconv.AppendFloat(buf, float64(b)/float64(1<<30), 'f', 1, 64)
+	case b >= 1<<20:
+		return strconv.AppendFloat(buf, float64(b)/float64(1<<20), 'f', 0, 64)
+	case b >= 1<<10:
+		return strconv.AppendFloat(buf, float64(b)/float64(1<<10), 'f', 0, 64)
+	default:
+		return strconv.AppendUint(buf, b, 10)
+	}
 }
 
 // Layout renders the full UI frame.
@@ -175,13 +230,17 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	if result.ok {
 		switch result.action {
 		case actionHide:
-			a.hideList.Toggle(result.name)
+			// A failed hide-list write only costs persistence across
+			// restarts; the in-memory list is already updated.
+			_, _ = a.hideList.Toggle(result.name)
 		case actionInfo:
 			go RunInfoWindow(result.pid, func(int32) {})
 		case actionTree:
 			go RunTreeWindow(result.pid, func(int32) {})
 		case actionKill:
-			syscall.Kill(int(result.pid), syscall.SIGKILL)
+			// ESRCH here just means the process died between menu click
+			// and kill; either way the refresh below shows the result.
+			_ = syscall.Kill(int(result.pid), syscall.SIGKILL)
 			go a.Refresh()
 		}
 	}
