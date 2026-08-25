@@ -12,9 +12,11 @@ src/                         # Go module root
     icon_darwin.go           # Dock icon via NSApplication CGO
     gui/icon.png             # Transparent dock icon
   pkg/proc/
-    proc.go                  # Process collection + ExtendedInfo via gopsutil v4
+    proc.go                  # Info type + ExtendedInfo via gopsutil v4 (on-demand)
+    monitor.go               # Cached low-cost sampler: identity once per PID, 1 syscall/pid
     naming.go                # Smart naming: "python: project-dir" from cwd
     naming_test.go
+    monitor_test.go
     tree.go                  # Process tree building (ancestor chain + full subtree)
     hide.go                  # Persistent hide list (JSON-backed)
     hide_test.go
@@ -40,11 +42,11 @@ output/                      # Gitignored — bin/, testing/
 
 ## Architecture
 
-- **Gio v0.9.0** immediate-mode UI framework
-- **daz-golang-gio** shared library for window persistence (`persist`) and context menus (`menu`)
-- **gopsutil v4** for process info (CPU%, RSS, VMS, cmdline)
-- **10s refresh interval** for gentle resource usage
-- Managed by `auto` daemon (always running, crash recovery, login startup)
+- **Gio v0.9.0** immediate-mode UI framework; **daz-golang-gio** for window persistence (`persist`) and context menus (`menu`)
+- **gopsutil v4** only for one-shot lookups (info window); never in a sampling loop — see gotcha below
+- **proc.Monitor** sampling loop: identity cached once per PID lifetime (start-time keyed), one `kern.proc.all` sysctl + one `proc_pidinfo(PROC_PIDTASKINFO)` syscall per process via a single persistent purego libproc handle. 5s cadence; CPU is per-window delta (Activity Monitor semantics), lifetime-average on first sight
+- **Render on change**: `App.Refresh` repaints only when displayed text (pid, name, CPU at 0.1, memory at formatBytes granularity) differs — an idle machine renders zero frames. `sameDisplay`/`rowDisplayKey` must stay in sync with `layoutRow` formatting and `formatBytes` thresholds
+- Managed by launchd (`com.darrenoakey.activity`), not auto; restart with `launchctl kickstart -k gui/$(id -u)/com.darrenoakey.activity`
 
 ## Gotchas
 
@@ -58,3 +60,4 @@ output/                      # Gitignored — bin/, testing/
 - **Column alignment**: Fixed dp widths for numeric columns (PID 90, CPU 80, Memory 100, Virtual 100), flexed name column.
 - **Smart naming**: Always uses cwd project directory for interpreters (python, node, etc.) and cwd-labeled programs (claude). Script args are ignored — they're generic tools (uvicorn, flask, run) not project identifiers. Case-insensitive interpreter matching (macOS Homebrew uses capital-P "Python").
 - **NSWindow autosave**: `setFrameAutosaveName:` needs nil guard — `stringWithUTF8String:` can return nil and crash without it.
+- **gopsutil v4 darwin dlopens per call**: every `Times()`, `MemoryInfo()`, `Cwd()` call does `purego.Dlopen(libSystem)` + dlclose (v4.26.x `loadProcFuncs`). In a per-process sampling loop that's thousands of dlopens per refresh — 71ms for ~1000 procs. That's why `proc.Monitor` keeps its own persistent libproc handle and one-shot lookups are the only sanctioned gopsutil use.
