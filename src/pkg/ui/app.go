@@ -22,7 +22,6 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/op/paint"
-	"gioui.org/text"
 	"gioui.org/unit"
 	"gioui.org/widget"
 	"gioui.org/widget/material"
@@ -42,6 +41,12 @@ const (
 	SortName
 	// SortPID sorts by PID ascending.
 	SortPID
+	// SortAvgRSS sorts by mean resident memory descending.
+	SortAvgRSS
+	// SortAvgCPU sorts by mean sampled CPU descending.
+	SortAvgCPU
+	// SortSamples sorts by observation count descending.
+	SortSamples
 )
 
 // Column layout: name, pid, cpu, phys, virt
@@ -76,17 +81,30 @@ type App struct {
 	mu          sync.Mutex
 	processes   []proc.Info
 	showHidden  bool
+	showTrends  bool
 	sortCol     SortColumn
+	sampleCount uint64
 	lastRefresh time.Time
 
+	analysing    bool
+	analyseErr   string
+	analyseLines []string
+
 	// persistent widget state
-	list       widget.List
-	toggleBtn  widget.Clickable
-	headerName widget.Clickable
-	headerPID  widget.Clickable
-	headerCPU  widget.Clickable
-	headerRSS  widget.Clickable
-	headerVMS  widget.Clickable
+	list          widget.List
+	analyseList   widget.List
+	toggleBtn     widget.Clickable
+	trendsBtn     widget.Clickable
+	analyseBtn    widget.Clickable
+	dismissBtn    widget.Clickable
+	headerName    widget.Clickable
+	headerPID     widget.Clickable
+	headerCPU     widget.Clickable
+	headerRSS     widget.Clickable
+	headerVMS     widget.Clickable
+	headerAvgRSS  widget.Clickable
+	headerAvgCPU  widget.Clickable
+	headerSamples widget.Clickable
 
 	// right-click context menu
 	rowTags []*bool // pointer event tags (stable pointers, one per visible row)
@@ -107,6 +125,7 @@ func NewApp(win *app.Window, hideList *proc.HideList) *App {
 		sortCol:  SortCPU,
 	}
 	a.list.Axis = layout.Vertical
+	a.analyseList.Axis = layout.Vertical
 	return a
 }
 
@@ -121,8 +140,9 @@ func (a *App) Refresh() {
 	}
 
 	a.mu.Lock()
-	changed := !sameDisplay(a.processes, infos)
+	changed := !sameDisplay(a.processes, infos, a.showTrends)
 	a.processes = infos
+	a.sampleCount = a.monitor.SampleCount()
 	a.lastRefresh = time.Now()
 	a.mu.Unlock()
 
@@ -132,14 +152,16 @@ func (a *App) Refresh() {
 }
 
 // sameDisplay reports whether two snapshots would render identical text.
-func sameDisplay(old, cur []proc.Info) bool {
+// trends includes the average columns, which are hidden in the live view so
+// an idle machine still renders zero frames while totals quietly accumulate.
+func sameDisplay(old, cur []proc.Info, trends bool) bool {
 	if len(old) != len(cur) {
 		return false
 	}
 	var ka, kb []byte
 	for i := range cur {
-		ka = rowDisplayKey(ka[:0], old[i])
-		kb = rowDisplayKey(kb[:0], cur[i])
+		ka = rowDisplayKey(ka[:0], old[i], trends)
+		kb = rowDisplayKey(kb[:0], cur[i], trends)
 		if !bytes.Equal(ka, kb) {
 			return false
 		}
@@ -150,7 +172,7 @@ func sameDisplay(old, cur []proc.Info) bool {
 // rowDisplayKey renders the row's visible columns (pid, name, CPU at one
 // decimal, memory at formatBytes granularity) into buf. Built on strconv —
 // the same backend fmt uses — so equal keys guarantee equal displayed text.
-func rowDisplayKey(buf []byte, p proc.Info) []byte {
+func rowDisplayKey(buf []byte, p proc.Info, trends bool) []byte {
 	buf = strconv.AppendInt(buf, int64(p.PID), 10)
 	buf = append(buf, 0)
 	buf = append(buf, p.Name...)
@@ -159,7 +181,16 @@ func rowDisplayKey(buf []byte, p proc.Info) []byte {
 	buf = append(buf, 0)
 	buf = appendMemKey(buf, p.RSS)
 	buf = append(buf, 0)
-	return appendMemKey(buf, p.VMS)
+	buf = appendMemKey(buf, p.VMS)
+	if !trends {
+		return buf
+	}
+	buf = append(buf, 0)
+	buf = appendMemKey(buf, p.AverageRSS())
+	buf = append(buf, 0)
+	buf = strconv.AppendFloat(buf, p.AverageCPU(), 'f', 1, 64)
+	buf = append(buf, 0)
+	return strconv.AppendUint(buf, p.Samples, 10)
 }
 
 // appendMemKey mirrors formatBytes' thresholds and rounding.
@@ -183,17 +214,20 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 
 	a.mu.Lock()
 	procs := a.processes
-	showHidden := a.showHidden
-	sortCol := a.sortCol
+	sampleCount := a.sampleCount
 	a.mu.Unlock()
 
 	a.handleHeaderClicks(gtx)
+	a.handleToolbarClicks(gtx, procs, sampleCount)
 
-	if a.toggleBtn.Clicked(gtx) {
-		a.mu.Lock()
-		a.showHidden = !a.showHidden
-		a.mu.Unlock()
-	}
+	a.mu.Lock()
+	showHidden := a.showHidden
+	showTrends := a.showTrends
+	sortCol := a.sortCol
+	analysing := a.analysing
+	analyseErr := a.analyseErr
+	analyseLines := a.analyseLines
+	a.mu.Unlock()
 
 	visible := a.filterAndSort(procs, showHidden, sortCol)
 
@@ -201,7 +235,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.tableOffsetY = 0
 	dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			d := a.layoutToolbar(gtx, len(procs), len(visible))
+			d := a.layoutToolbar(gtx, len(procs), len(visible), sampleCount, showTrends, analysing)
 			a.tableOffsetY += d.Size.Y
 			return d
 		}),
@@ -211,7 +245,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 			return d
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			d := a.layoutHeader(gtx, sortCol)
+			d := a.layoutHeader(gtx, sortCol, showTrends)
 			a.tableOffsetY += d.Size.Y
 			return d
 		}),
@@ -221,7 +255,10 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 			return d
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return a.layoutTable(gtx, visible)
+			return a.layoutTable(gtx, visible, showTrends)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return a.layoutAnalysis(gtx, analysing, analyseErr, analyseLines)
 		}),
 	)
 
@@ -259,6 +296,9 @@ func (a *App) handleHeaderClicks(gtx layout.Context) {
 		{&a.headerCPU, SortCPU},
 		{&a.headerRSS, SortRSS},
 		{&a.headerVMS, SortVMS},
+		{&a.headerAvgRSS, SortAvgRSS},
+		{&a.headerAvgCPU, SortAvgCPU},
+		{&a.headerSamples, SortSamples},
 	} {
 		if cb.btn.Clicked(gtx) {
 			a.mu.Lock()
@@ -290,6 +330,12 @@ func (a *App) filterAndSort(procs []proc.Info, showHidden bool, sortCol SortColu
 			return visible[i].Name < visible[j].Name
 		case SortPID:
 			return visible[i].PID < visible[j].PID
+		case SortAvgRSS:
+			return visible[i].AverageRSS() > visible[j].AverageRSS()
+		case SortAvgCPU:
+			return visible[i].AverageCPU() > visible[j].AverageCPU()
+		case SortSamples:
+			return visible[i].Samples > visible[j].Samples
 		default:
 			return visible[i].CPU > visible[j].CPU
 		}
@@ -305,70 +351,99 @@ func (a *App) layoutSeparator(gtx layout.Context) layout.Dimensions {
 	return layout.Dimensions{Size: image.Pt(w, h)}
 }
 
-func (a *App) layoutToolbar(gtx layout.Context, total, visible int) layout.Dimensions {
+func (a *App) layoutToolbar(gtx layout.Context, total, visible int, samples uint64, trends, analysing bool) layout.Dimensions {
 	return layout.Inset{
 		Top: unit.Dp(12), Bottom: unit.Dp(8),
 		Left: unit.Dp(16), Right: unit.Dp(16),
 	}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle, Spacing: layout.SpaceBetween}.Layout(gtx,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				label := fmt.Sprintf("%d processes", total)
-				if total-visible > 0 {
-					label += fmt.Sprintf("  (%d hidden)", total-visible)
-				}
-				l := material.Body2(a.theme, label)
-				l.Color = textSecondary
-				l.TextSize = unit.Sp(13)
-				return l.Layout(gtx)
+				return a.layoutToolbarLabel(gtx, total, visible, samples)
 			}),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-					var btnText string
-					a.mu.Lock()
-					if a.showHidden {
-						btnText = "Hide filtered"
-					} else {
-						btnText = "Show all"
-					}
-					a.mu.Unlock()
-					btn := material.Button(a.theme, &a.toggleBtn, btnText)
-					btn.TextSize = unit.Sp(11)
-					btn.Background = surfaceColor
-					btn.Color = textSecondary
-					btn.Inset = layout.Inset{
-						Top: unit.Dp(4), Bottom: unit.Dp(4),
-						Left: unit.Dp(12), Right: unit.Dp(12),
-					}
-					return btn.Layout(gtx)
-				})
+				return a.layoutToolbarButtons(gtx, trends, analysing)
 			}),
 		)
 	})
 }
 
-func (a *App) layoutHeader(gtx layout.Context, sortCol SortColumn) layout.Dimensions {
+func (a *App) layoutToolbarLabel(gtx layout.Context, total, visible int, samples uint64) layout.Dimensions {
+	label := fmt.Sprintf("%d processes", total)
+	if total-visible > 0 {
+		label += fmt.Sprintf("  (%d hidden)", total-visible)
+	}
+	if samples > 0 {
+		label += fmt.Sprintf("  ·  %d samples", samples)
+	}
+	l := material.Body2(a.theme, label)
+	l.Color = textSecondary
+	l.TextSize = unit.Sp(13)
+	return l.Layout(gtx)
+}
+
+func (a *App) layoutToolbarButtons(gtx layout.Context, trends, analysing bool) layout.Dimensions {
+	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return a.layoutToolButton(gtx, &a.trendsBtn, trendsLabel(trends), trends)
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return a.layoutToolButton(gtx, &a.analyseBtn, analyseLabel(analysing), true)
+			})
+		}),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Left: unit.Dp(8)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				text := "Show all"
+				if a.showHidden {
+					text = "Hide filtered"
+				}
+				return a.layoutToolButton(gtx, &a.toggleBtn, text, false)
+			})
+		}),
+	)
+}
+
+func trendsLabel(trends bool) string {
+	if trends {
+		return "Live"
+	}
+	return "Trends"
+}
+
+func analyseLabel(analysing bool) string {
+	if analysing {
+		return "Analysing…"
+	}
+	return "Analyse with LLM"
+}
+
+func (a *App) layoutToolButton(gtx layout.Context, click *widget.Clickable, text string, accent bool) layout.Dimensions {
+	btn := material.Button(a.theme, click, text)
+	btn.TextSize = unit.Sp(11)
+	btn.Background = surfaceColor
+	btn.Color = textSecondary
+	if accent {
+		btn.Background = accentBlue
+		btn.Color = bgColor
+	}
+	btn.Inset = layout.Inset{
+		Top: unit.Dp(4), Bottom: unit.Dp(4),
+		Left: unit.Dp(12), Right: unit.Dp(12),
+	}
+	return btn.Layout(gtx)
+}
+
+func (a *App) layoutHeader(gtx layout.Context, sortCol SortColumn, trends bool) layout.Dimensions {
 	headerH := gtx.Dp(unit.Dp(32))
 	totalW := gtx.Constraints.Max.X
 
 	paint.FillShape(gtx.Ops, headerBGClr, clip.Rect{Max: image.Pt(totalW, headerH)}.Op())
 
-	type headerCol struct {
-		label string
-		btn   *widget.Clickable
-		col   SortColumn
-		align text.Alignment
-	}
-	cols := []headerCol{
-		{"Process", &a.headerName, SortName, text.Start},
-		{"PID", &a.headerPID, SortPID, text.End},
-		{"CPU", &a.headerCPU, SortCPU, text.End},
-		{"Memory", &a.headerRSS, SortRSS, text.End},
-		{"Virtual", &a.headerVMS, SortVMS, text.End},
-	}
+	cols, widths := a.headerSpec(trends)
 
 	nameW := totalW
-	for i := 1; i < len(colWidths); i++ {
-		nameW -= gtx.Dp(colWidths[i])
+	for i := 1; i < len(widths); i++ {
+		nameW -= gtx.Dp(widths[i])
 	}
 
 	x := 0
@@ -377,7 +452,7 @@ func (a *App) layoutHeader(gtx layout.Context, sortCol SortColumn) layout.Dimens
 		if i == 0 {
 			colW = nameW
 		} else {
-			colW = gtx.Dp(colWidths[i])
+			colW = gtx.Dp(widths[i])
 		}
 
 		offset := op.Offset(image.Pt(x, 0)).Push(gtx.Ops)
@@ -412,14 +487,14 @@ func (a *App) layoutHeader(gtx layout.Context, sortCol SortColumn) layout.Dimens
 	return layout.Dimensions{Size: image.Pt(totalW, headerH)}
 }
 
-func (a *App) layoutTable(gtx layout.Context, visible []proc.Info) layout.Dimensions {
+func (a *App) layoutTable(gtx layout.Context, visible []proc.Info, trends bool) layout.Dimensions {
 	return material.List(a.theme, &a.list).Layout(gtx, len(visible), func(gtx layout.Context, index int) layout.Dimensions {
 		p := visible[index]
-		return a.layoutRow(gtx, p, index)
+		return a.layoutRow(gtx, p, index, trends)
 	})
 }
 
-func (a *App) layoutRow(gtx layout.Context, p proc.Info, index int) layout.Dimensions {
+func (a *App) layoutRow(gtx layout.Context, p proc.Info, index int, trends bool) layout.Dimensions {
 	rowH := gtx.Dp(unit.Dp(36))
 	totalW := gtx.Constraints.Max.X
 	hidden := a.hideList.IsHidden(p.Name)
@@ -454,34 +529,20 @@ func (a *App) layoutRow(gtx layout.Context, p proc.Info, index int) layout.Dimen
 		}
 	}
 
+	widths := columnWidths(trends)
 	nameW := totalW
-	for i := 1; i < len(colWidths); i++ {
-		nameW -= gtx.Dp(colWidths[i])
+	for i := 1; i < len(widths); i++ {
+		nameW -= gtx.Dp(widths[i])
 	}
 
 	x := 0
-	type colData struct {
-		val   string
-		width int
-		align text.Alignment
-		color color.NRGBA
-		bold  bool
-	}
-
 	nameFG := textPrimary
 	metricFG := textSecondary
 	if hidden {
 		nameFG = textMuted
 		metricFG = textMuted
 	}
-
-	columns := []colData{
-		{p.Name, nameW, text.Start, nameFG, true},
-		{fmt.Sprintf("%d", p.PID), gtx.Dp(colWidths[1]), text.End, textMuted, false},
-		{fmt.Sprintf("%.1f%%", p.CPU), gtx.Dp(colWidths[2]), text.End, cpuColor(p.CPU, hidden), false},
-		{formatBytes(p.RSS), gtx.Dp(colWidths[3]), text.End, metricFG, false},
-		{formatBytes(p.VMS), gtx.Dp(colWidths[4]), text.End, metricFG, false},
-	}
+	columns := rowColumns(gtx, p, widths, nameW, nameFG, metricFG, hidden, trends)
 
 	for _, col := range columns {
 		offset := op.Offset(image.Pt(x, 0)).Push(gtx.Ops)

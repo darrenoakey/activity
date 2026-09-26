@@ -163,3 +163,123 @@ func TestMonitorPrunesDead(t *testing.T) {
 		t.Errorf("dead pid %d still cached (name %q)", pid, e.name)
 	}
 }
+
+func TestMonitorAccumulatesTotals(t *testing.T) {
+	m := NewMonitor()
+	myPID := int32(os.Getpid())
+
+	first := sampleOwn(t, m, myPID)
+	if first.Samples != 1 {
+		t.Fatalf("Samples = %d, want 1", first.Samples)
+	}
+	if first.RSSSum != first.RSS {
+		t.Fatalf("RSSSum %d != first RSS %d", first.RSSSum, first.RSS)
+	}
+	if first.AverageRSS() != first.RSS {
+		t.Fatalf("AverageRSS %d != RSS %d", first.AverageRSS(), first.RSS)
+	}
+	if m.SampleCount() != 1 {
+		t.Fatalf("SampleCount = %d, want 1", m.SampleCount())
+	}
+
+	second := sampleOwn(t, m, myPID)
+	if second.Samples != 2 {
+		t.Fatalf("Samples = %d after second sample, want 2", second.Samples)
+	}
+	if second.RSSSum != first.RSS+second.RSS {
+		t.Fatalf("RSSSum %d != %d + %d", second.RSSSum, first.RSS, second.RSS)
+	}
+	wantAvg := (first.RSS + second.RSS) / 2
+	if second.AverageRSS() != wantAvg {
+		t.Fatalf("AverageRSS = %d, want %d", second.AverageRSS(), wantAvg)
+	}
+	if second.CPUSum < first.CPU {
+		t.Fatalf("CPUSum %f shrank from first CPU %f", second.CPUSum, first.CPU)
+	}
+	if m.SampleCount() != 2 {
+		t.Fatalf("SampleCount = %d, want 2", m.SampleCount())
+	}
+}
+
+func TestMonitorDropsTotalsWithDeadProcess(t *testing.T) {
+	m := NewMonitor()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting sleep: %v", err)
+	}
+	pid := int32(cmd.Process.Pid)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	seen := sampleOwn(t, m, pid)
+	if seen.Samples < 1 || seen.RSSSum == 0 && seen.RSS == 0 {
+		// sleep has a resident set; a zero reading means we never observed it.
+		if seen.Samples < 1 {
+			t.Fatalf("sleep pid %d was not accumulated", pid)
+		}
+	}
+	if seen.Samples < 1 {
+		t.Fatalf("sleep pid %d Samples = 0", pid)
+	}
+
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("killing sleep: %v", err)
+	}
+	_, _ = cmd.Process.Wait()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		infos, err := m.Sample()
+		if err != nil {
+			t.Fatalf("Sample() error: %v", err)
+		}
+		if !containsPID(infos, pid) {
+			if _, ok := m.entries[pid]; ok {
+				t.Fatalf("dead pid %d still holds totals", pid)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d still listed after kill", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestAverageRSSZeroWhenUnsampled(t *testing.T) {
+	var info Info
+	if info.AverageRSS() != 0 || info.AverageCPU() != 0 {
+		t.Fatal("unsampled averages must be zero, not a divide-by-zero")
+	}
+}
+
+func sampleOwn(t *testing.T, m *Monitor, pid int32) Info {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		infos, err := m.Sample()
+		if err != nil {
+			t.Fatalf("Sample() error: %v", err)
+		}
+		for _, info := range infos {
+			if info.PID == pid && info.Samples > 0 {
+				return info
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d never accumulated a sample", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func containsPID(infos []Info, pid int32) bool {
+	for _, info := range infos {
+		if info.PID == pid {
+			return true
+		}
+	}
+	return false
+}

@@ -26,10 +26,14 @@ usage() {
 
 # signing_identity finds a stable code-signing identity so the bundle's
 # CFBundleIdentifier-based Designated Requirement survives rebuilds.
+# Match any Apple Development identity, not a personal name: the usable
+# key on this machine is "Apple Development: Created via API" and it is
+# the same team (58MF5GATL7) launchd already requires. Ad-hoc "-" makes
+# launchd refuse the job with OS_REASON_CODESIGNING.
 signing_identity() {
     local id
     id="$( (security find-identity -v -p codesigning 2>/dev/null \
-            | grep -E "Apple Development: Darren Oakey|Developer ID Application: " \
+            | grep -E "Apple Development:|Developer ID Application: " \
             | head -1 | awk '{print $2}') || true )"
     if [ -n "$id" ]; then
         echo "$id"

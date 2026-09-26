@@ -30,6 +30,7 @@ type Monitor struct {
 	mu      sync.Mutex
 	entries map[int32]*entry
 	gen     uint64
+	samples uint64 // successful Sample calls, not per-process observations
 
 	// investigations counts one-time identity lookups (for tests).
 	investigations int
@@ -44,11 +45,31 @@ type entry struct {
 	cpuTotal  float64   // cumulative CPU seconds at sampledAt
 	sampledAt time.Time // zero until first observation
 	gen       uint64
+
+	// Running totals only. Dead PIDs drop these with the entry, so the
+	// map stays bounded by the live process table.
+	rssSum    uint64
+	cpuPctSum float64
+	samples   uint64
 }
 
 // NewMonitor creates a fresh sampler with an empty identity cache.
 func NewMonitor() *Monitor {
 	return &Monitor{entries: make(map[int32]*entry)}
+}
+
+// SampleCount is how many times Sample has completed on this monitor.
+func (m *Monitor) SampleCount() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.samples
+}
+
+// noteUsage folds one observation into the process totals.
+func (e *entry) noteUsage(rss uint64, cpu float64) {
+	e.rssSum += rss
+	e.cpuPctSum += cpu
+	e.samples++
 }
 
 // Sample gathers CPU and memory for every running process.
@@ -68,6 +89,7 @@ func (m *Monitor) Sample() ([]Info, error) {
 
 	now := time.Now()
 	m.gen++
+	m.samples++
 	out := make([]Info, 0, len(kprocs))
 
 	for i := range kprocs {
@@ -113,6 +135,7 @@ func (m *Monitor) Sample() ([]Info, error) {
 				}
 			}
 			e.cpuTotal, e.sampledAt = total, now
+			e.noteUsage(rss, cpu)
 		}
 
 		out = append(out, Info{
@@ -122,6 +145,9 @@ func (m *Monitor) Sample() ([]Info, error) {
 			CPU:     cpu,
 			RSS:     rss,
 			VMS:     vms,
+			RSSSum:  e.rssSum,
+			CPUSum:  e.cpuPctSum,
+			Samples: e.samples,
 		})
 	}
 

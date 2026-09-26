@@ -81,7 +81,7 @@ func TestCPUColor(t *testing.T) {
 func TestSameDisplay(t *testing.T) {
 	base := []proc.Info{{PID: 1, Name: "python: proj", CPU: 3.14159, RSS: 100 << 20, VMS: 1 << 30}}
 
-	same := func(cur []proc.Info) bool { return sameDisplay(base, cur) }
+	same := func(cur []proc.Info) bool { return sameDisplay(base, cur, false) }
 
 	if !same(base) {
 		t.Error("identical snapshots must be display-equal")
@@ -100,5 +100,16 @@ func TestSameDisplay(t *testing.T) {
 	}
 	if same([]proc.Info{}) {
 		t.Error("length change must differ")
+	}
+}
+
+func TestSameDisplayTrendsSeesAverages(t *testing.T) {
+	base := []proc.Info{{PID: 1, Name: "a", CPU: 1, RSS: 100 << 20, VMS: 1 << 30, RSSSum: 100 << 20, Samples: 1}}
+	next := []proc.Info{{PID: 1, Name: "a", CPU: 1, RSS: 100 << 20, VMS: 1 << 30, RSSSum: 300 << 20, Samples: 2}}
+	if !sameDisplay(base, next, false) {
+		t.Fatal("live view must ignore average drift so an idle machine does not repaint")
+	}
+	if sameDisplay(base, next, true) {
+		t.Fatal("trends view must repaint when average memory crosses a displayed megabyte")
 	}
 }

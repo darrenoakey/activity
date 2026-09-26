@@ -94,13 +94,36 @@ func FetchExtended(pid int32) (ExtendedInfo, error) {
 }
 
 // Info holds resource usage information for a single process.
+//
+// RSSSum, CPUSum and Samples are running totals for this process identity
+// since the monitor first saw it. They are two accumulators plus a count —
+// not a time series — so history cannot grow with uptime.
 type Info struct {
 	PID     int32
 	Name    string // smart name derived from cmdline
 	RawName string // original process name from OS
 	CPU     float64
-	RSS     uint64 // resident set size in bytes
-	VMS     uint64 // virtual memory size in bytes
+	RSS     uint64  // resident set size in bytes
+	VMS     uint64  // virtual memory size in bytes
+	RSSSum  uint64  // sum of RSS across Samples
+	CPUSum  float64 // sum of per-sample CPU percent across Samples
+	Samples uint64  // observations folded into the sums
+}
+
+// AverageRSS is the mean resident size over Samples, or 0 when unsampled.
+func (info Info) AverageRSS() uint64 {
+	if info.Samples == 0 {
+		return 0
+	}
+	return info.RSSSum / info.Samples
+}
+
+// AverageCPU is the mean sampled CPU percent over Samples, or 0 when unsampled.
+func (info Info) AverageCPU() float64 {
+	if info.Samples == 0 {
+		return 0
+	}
+	return info.CPUSum / float64(info.Samples)
 }
 
 // Collect gathers process information for all running processes.
